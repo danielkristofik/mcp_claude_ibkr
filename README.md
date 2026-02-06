@@ -26,7 +26,7 @@ The installer will:
 |---|---|---|
 | `ib_account_summary` | Account overview — liquidation value, cash, margin, buying power | Yes |
 | `ib_positions` | Portfolio positions with P&L | Yes |
-| `ib_market_data` | Real-time snapshot (bid/ask/last/volume) | Yes |
+| `ib_market_data` | Real-time snapshot (bid/ask/last/volume) + Greeks for options | Yes |
 | `ib_historical_data` | Historical OHLCV bars | Yes |
 | `ib_contract_details` | Contract details | Yes |
 | `ib_option_chains` | Option expirations and strikes | Yes |

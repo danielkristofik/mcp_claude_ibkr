@@ -163,6 +163,9 @@ class MarketDataInput(BaseModel):
     sec_type: str = Field(default="STK", description="Security type: STK, FX, OPT, FUT")
     exchange: str = Field(default="SMART", description="Exchange (default SMART for US stocks)")
     currency: str = Field(default="USD", description="Currency (default USD)")
+    expiry: Optional[str] = Field(default=None, description="Expiry date YYYYMMDD (required for OPT/FUT, e.g. '20260220')")
+    strike: Optional[float] = Field(default=None, description="Strike price (required for OPT, e.g. 50)")
+    right: Optional[str] = Field(default=None, description="Option right: 'C' for call, 'P' for put (required for OPT)")
 
 
 class HistoricalDataInput(BaseModel):
@@ -458,6 +461,13 @@ async def ib_market_data(params: MarketDataInput) -> str:
     """Get a real-time market data snapshot for a given symbol.
 
     Returns current bid/ask, last price, volume, high/low, and other tick data.
+    For options, also returns Greeks (IV, delta, gamma, theta, vega).
+
+    Supports stocks, forex, options, and futures. For options, provide
+    sec_type="OPT" with expiry, strike, and right parameters.
+
+    Example option query: symbol="XLE", sec_type="OPT", expiry="20260220",
+    strike=50, right="P"
 
     Args:
         params: Symbol and contract parameters.
@@ -468,7 +478,8 @@ async def ib_market_data(params: MarketDataInput) -> str:
     try:
         ib = await _get_ib()
         contract = _contract_from_params(
-            params.symbol, params.sec_type, params.exchange, params.currency
+            params.symbol, params.sec_type, params.exchange, params.currency,
+            params.expiry, params.strike, params.right,
         )
         await ib.qualifyContractsAsync(contract)
 
@@ -489,8 +500,13 @@ async def ib_market_data(params: MarketDataInput) -> str:
                 return "N/A"
             return f"{val:,.0f}"
 
+        # Build title
+        title = params.symbol
+        if params.sec_type == "OPT" and params.expiry:
+            title += f" {params.expiry} {params.strike}{params.right}"
+
         lines = [
-            f"# Market Data: {params.symbol}",
+            f"# Market Data: {title}",
             "",
             f"Last: {_tv(ticker.last)}",
             f"Bid: {_tv(ticker.bid)} x {_tv_int(ticker.bidSize)}",
@@ -501,6 +517,22 @@ async def ib_market_data(params: MarketDataInput) -> str:
             f"Close: {_tv(ticker.close)}",
             f"Volume: {_tv_int(ticker.volume)}",
         ]
+
+        # Add Greeks for options
+        if params.sec_type == "OPT":
+            greeks = ticker.modelGreeks or ticker.lastGreeks
+            if greeks:
+                lines.extend([
+                    "",
+                    "## Greeks",
+                    f"IV: {greeks.impliedVol:.4f}" if greeks.impliedVol and greeks.impliedVol == greeks.impliedVol else "IV: N/A",
+                    f"Delta: {greeks.delta:.4f}" if greeks.delta and greeks.delta == greeks.delta else "Delta: N/A",
+                    f"Gamma: {greeks.gamma:.4f}" if greeks.gamma and greeks.gamma == greeks.gamma else "Gamma: N/A",
+                    f"Theta: {greeks.theta:.4f}" if greeks.theta and greeks.theta == greeks.theta else "Theta: N/A",
+                    f"Vega: {greeks.vega:.4f}" if greeks.vega and greeks.vega == greeks.vega else "Vega: N/A",
+                ])
+            else:
+                lines.extend(["", "Greeks: not available (market may be closed)"])
 
         return "\n".join(lines)
 
