@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ibkr": {
+      "command": "python",
+      "args": ["/FULL/PATH/TO/ibkr-mcp-server/ibkr_mcp.py"],
+      "env": {}
+    }
+  }
+}

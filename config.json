@@ -1,0 +1,7 @@
+{
+  "tws_host": "127.0.0.1",
+  "tws_port": 7496,
+  "client_id": 10,
+  "connect_timeout": 10,
+  "pending_order_ttl_seconds": 300
+}
