@@ -6,12 +6,20 @@
 
 MCP (Model Context Protocol) server that connects [Claude](https://claude.ai) to [Interactive Brokers TWS](https://www.interactivebrokers.com/en/trading/tws.php) via `ib_insync`. Use natural language to check your portfolio, pull market data, and place orders — all from Claude Desktop, Claude Code, or any MCP-compatible client.
 
-## Quick Start (macOS)
+## Quick Start
 
+**macOS:**
 ```bash
 git clone https://github.com/danielkristofik/mcp_claude_ibkr.git
 cd mcp_claude_ibkr
 ./install.sh
+```
+
+**Linux (Ubuntu/Debian):**
+```bash
+git clone https://github.com/danielkristofik/mcp_claude_ibkr.git
+cd mcp_claude_ibkr
+./install-linux.sh
 ```
 
 The installer will:
