@@ -19,6 +19,7 @@ The installer will:
 2. Create a virtual environment and install dependencies
 3. Let you choose Paper or Live trading port
 4. Configure Claude Desktop automatically
+5. Configure Claude Code (CLI) if installed
 
 ## Features
 
@@ -84,6 +85,16 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) a
 > **Important:** Use the full absolute path to the Python binary inside the venv.
 
 See [`claude_desktop_config_example.json`](claude_desktop_config_example.json) for a complete example.
+
+### Claude Code (CLI) Setup
+
+If you use [Claude Code](https://docs.anthropic.com/en/docs/claude-code), the MCP server can be configured with a single command:
+
+```bash
+claude mcp add --transport stdio --scope user ibkr -- /FULL/PATH/TO/claude-tws-connect/venv/bin/python /FULL/PATH/TO/claude-tws-connect/ibkr_mcp.py
+```
+
+Alternatively, this repository includes a `.mcp.json` file that makes the MCP server available automatically when you open the project directory in Claude Code — no manual configuration needed.
 
 ### Verify
 

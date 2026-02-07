@@ -38,7 +38,7 @@ check_python_version() {
 }
 
 find_python() {
-    echo -e "\n${BOLD}── Step 1/4: Checking Python ──${NC}\n"
+    echo -e "\n${BOLD}── Step 1/5: Checking Python ──${NC}\n"
 
     # 1) Check python3 in PATH
     if command -v python3 &>/dev/null; then
@@ -103,7 +103,7 @@ find_python() {
 # ─── 2. Create venv & install dependencies ───────────────────────────────────
 
 setup_venv() {
-    echo -e "\n${BOLD}── Step 2/4: Setting up virtual environment ──${NC}\n"
+    echo -e "\n${BOLD}── Step 2/5: Setting up virtual environment ──${NC}\n"
 
     local venv_dir="$SCRIPT_DIR/venv"
 
@@ -134,7 +134,7 @@ setup_venv() {
 # ─── 3. Select TWS port ──────────────────────────────────────────────────────
 
 select_tws_port() {
-    echo -e "\n${BOLD}── Step 3/4: TWS Connection ──${NC}\n"
+    echo -e "\n${BOLD}── Step 3/5: TWS Connection ──${NC}\n"
 
     echo "Which TWS mode will you use?"
     echo ""
@@ -183,7 +183,7 @@ with open(path, 'w') as f:
 # ─── 4. Configure Claude Desktop ─────────────────────────────────────────────
 
 configure_claude_desktop() {
-    echo -e "\n${BOLD}── Step 4/4: Claude Desktop configuration ──${NC}\n"
+    echo -e "\n${BOLD}── Step 4/5: Claude Desktop configuration ──${NC}\n"
 
     local config_dir="$HOME/Library/Application Support/Claude"
     local config_file="$config_dir/claude_desktop_config.json"
@@ -243,7 +243,33 @@ with open(config_path, 'w') as f:
     fi
 }
 
-# ─── 5. Summary ──────────────────────────────────────────────────────────────
+# ─── 5. Configure Claude Code (CLI) ──────────────────────────────────────────
+
+configure_claude_code() {
+    echo -e "\n${BOLD}── Step 5/5: Claude Code (CLI) configuration ──${NC}\n"
+
+    local venv_python="$SCRIPT_DIR/venv/bin/python"
+    local mcp_script="$SCRIPT_DIR/ibkr_mcp.py"
+
+    if command -v claude &>/dev/null; then
+        info "Claude Code CLI detected. Adding MCP server..."
+        if claude mcp add --transport stdio --scope user ibkr -- "$venv_python" "$mcp_script"; then
+            success "Claude Code configured (user scope — works in every project)"
+        else
+            warn "Failed to add MCP server via claude CLI."
+            info "You can add it manually: claude mcp add --transport stdio --scope user ibkr -- \"$venv_python\" \"$mcp_script\""
+        fi
+    else
+        info "Claude Code CLI not found. Skipping."
+        echo ""
+        echo "  To use with Claude Code, install it and run:"
+        echo ""
+        echo "    claude mcp add --transport stdio --scope user ibkr -- \"$venv_python\" \"$mcp_script\""
+        echo ""
+    fi
+}
+
+# ─── 6. Summary ──────────────────────────────────────────────────────────────
 
 print_summary() {
     echo ""
@@ -265,6 +291,12 @@ print_summary() {
     echo "     - Allow connections from localhost"
     echo "  3. Restart Claude Desktop"
     echo ""
+    if command -v claude &>/dev/null; then
+        echo -e "  ${GREEN}Claude Code:${NC} MCP server configured (user scope)"
+    else
+        echo -e "  ${BLUE}Claude Code:${NC} Run 'claude mcp add' to configure (see README)"
+    fi
+    echo ""
 }
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -278,4 +310,5 @@ find_python
 setup_venv
 select_tws_port
 configure_claude_desktop
+configure_claude_code
 print_summary

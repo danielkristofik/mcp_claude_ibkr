@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ibkr": {
+      "type": "stdio",
+      "command": "./venv/bin/python",
+      "args": ["./ibkr_mcp.py"]
+    }
+  }
+}
