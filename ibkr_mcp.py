@@ -18,6 +18,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from enum import Enum
+from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from mcp.server.fastmcp import FastMCP
@@ -30,15 +31,25 @@ from ib_insync import (
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-TWS_HOST = "127.0.0.1"
-TWS_PORT = 7496          # 7496 = live, 7497 = paper trading
-CLIENT_ID = 10           # MCP client ID (avoid conflicts with other connections)
-CONNECT_TIMEOUT = 10     # seconds
+def _load_config() -> dict:
+    """Load config from config.json next to this script."""
+    config_path = Path(__file__).parent / "config.json"
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+_config = _load_config()
+TWS_HOST = _config.get("tws_host", "127.0.0.1")
+TWS_PORT = _config.get("tws_port", 7496)
+CLIENT_ID = _config.get("client_id", 10)
+CONNECT_TIMEOUT = _config.get("connect_timeout", 10)
 
 # ─── Pending orders store (for confirmation flow) ─────────────────────────────
 
 _pending_orders: Dict[str, Dict[str, Any]] = {}
-_PENDING_TTL = 300  # 5 minutes TTL for pending orders
+_PENDING_TTL = _config.get("pending_order_ttl_seconds", 300)
 
 
 # ─── IB Connection Management ─────────────────────────────────────────────────

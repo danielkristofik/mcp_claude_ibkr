@@ -126,52 +126,64 @@ setup_venv() {
     success "Dependencies installed."
 }
 
-# ─── 3. Select TWS port ──────────────────────────────────────────────────────
+# ─── 3. Configure connection ─────────────────────────────────────────────────
 
-select_tws_port() {
-    echo -e "\n${BOLD}── Step 3/5: TWS Connection ──${NC}\n"
+configure_connection() {
+    echo -e "\n${BOLD}── Step 3/5: TWS/IB Gateway Connection ──${NC}\n"
 
-    echo "Which TWS mode will you use?"
+    echo "Which connection mode will you use?"
     echo ""
-    echo "  1) Paper Trading (port 7497) — recommended for testing"
-    echo "  2) Live Trading  (port 7496)"
+    echo "  1) TWS Paper Trading     (localhost:7497) — recommended for testing"
+    echo "  2) TWS Live Trading      (localhost:7496)"
+    echo "  3) IB Gateway Paper      (localhost:4002)"
+    echo "  4) IB Gateway Live       (localhost:4001)"
+    echo "  5) Custom host/port"
     echo ""
 
+    local host="127.0.0.1"
     local port
     while true; do
-        read -rp "$(echo -e "${YELLOW}Select [1/2]: ${NC}")" choice
+        read -rp "$(echo -e "${YELLOW}Select [1-5]: ${NC}")" choice
         case "$choice" in
             1) port=7497; break ;;
             2) port=7496; break ;;
-            *) warn "Please enter 1 or 2." ;;
+            3) port=4002; break ;;
+            4) port=4001; break ;;
+            5)
+                read -rp "$(echo -e "${YELLOW}Host [127.0.0.1]: ${NC}")" host
+                host="${host:-127.0.0.1}"
+                read -rp "$(echo -e "${YELLOW}Port: ${NC}")" port
+                if [[ -z "$port" || ! "$port" =~ ^[0-9]+$ ]]; then
+                    warn "Invalid port. Please try again."
+                    continue
+                fi
+                break
+                ;;
+            *) warn "Please enter 1-5." ;;
         esac
     done
 
+    TWS_HOST="$host"
     TWS_PORT="$port"
-    success "TWS port set to $TWS_PORT"
+    success "Connection: $TWS_HOST:$TWS_PORT"
 
-    # Update TWS_PORT in ibkr_mcp.py
-    local mcp_file="$SCRIPT_DIR/ibkr_mcp.py"
-    if [[ -f "$mcp_file" ]]; then
-        sed -i "s/^TWS_PORT = [0-9]*/TWS_PORT = $TWS_PORT/" "$mcp_file"
-        success "Updated TWS_PORT in ibkr_mcp.py"
-    fi
-
-    # Update tws_port in config.json
+    # Update config.json (ibkr_mcp.py reads this at startup)
     local config_file="$SCRIPT_DIR/config.json"
     if [[ -f "$config_file" ]]; then
         "$SCRIPT_DIR/venv/bin/python" -c "
 import json, sys
 path = sys.argv[1]
-port = int(sys.argv[2])
+host = sys.argv[2]
+port = int(sys.argv[3])
 with open(path) as f:
     cfg = json.load(f)
+cfg['tws_host'] = host
 cfg['tws_port'] = port
 with open(path, 'w') as f:
     json.dump(cfg, f, indent=2)
     f.write('\n')
-" "$config_file" "$TWS_PORT"
-        success "Updated tws_port in config.json"
+" "$config_file" "$TWS_HOST" "$TWS_PORT"
+        success "Updated config.json"
     fi
 }
 
@@ -247,7 +259,9 @@ configure_claude_code() {
     local mcp_script="$SCRIPT_DIR/ibkr_mcp.py"
 
     if command -v claude &>/dev/null; then
-        info "Claude Code CLI detected. Adding MCP server..."
+        info "Claude Code CLI detected. Configuring MCP server..."
+        # Remove existing registration (if any) before adding
+        claude mcp remove --scope user ibkr 2>/dev/null || true
         if claude mcp add --transport stdio --scope user ibkr -- "$venv_python" "$mcp_script"; then
             success "Claude Code configured (user scope — works in every project)"
         else
@@ -274,7 +288,7 @@ print_summary() {
     echo ""
     echo -e "  Python:     ${BOLD}$PYTHON${NC}"
     echo -e "  venv:       ${BOLD}$SCRIPT_DIR/venv${NC}"
-    echo -e "  TWS port:   ${BOLD}$TWS_PORT${NC}"
+    echo -e "  TWS conn:   ${BOLD}$TWS_HOST:$TWS_PORT${NC}"
     echo -e "  MCP server: ${BOLD}$SCRIPT_DIR/ibkr_mcp.py${NC}"
     echo ""
     echo -e "${YELLOW}${BOLD}Before using, make sure to:${NC}"
@@ -282,7 +296,7 @@ print_summary() {
     echo "  1. Start TWS or IB Gateway (locally or via SSH tunnel)"
     echo "  2. In TWS: Edit → Global Configuration → API → Settings"
     echo "     - Enable ActiveX and Socket Clients"
-    echo "     - Socket port = $TWS_PORT"
+    echo "     - Socket port = ${TWS_PORT}"
     echo "     - Allow connections from localhost"
     echo "  3. Restart Claude Desktop (if using Claude Desktop)"
     echo ""
@@ -303,7 +317,7 @@ echo -e "${BOLD}╚════════════════════�
 
 find_python
 setup_venv
-select_tws_port
+configure_connection
 configure_claude_desktop
 configure_claude_code
 print_summary
