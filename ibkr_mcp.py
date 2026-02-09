@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 from ib_insync import (
     IB, Stock, Forex, Option, Future, Contract,
     MarketOrder, LimitOrder, StopOrder, StopLimitOrder,
-    ExecutionFilter, util
+    ExecutionFilter, ScannerSubscription, TagValue, util
 )
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -314,6 +314,54 @@ class ExecutionsInput(BaseModel):
     client_id_filter: Optional[int] = Field(
         default=None,
         description="Filter executions by client ID"
+    )
+
+
+class ScannerInput(BaseModel):
+    """Input for market scanner."""
+    model_config = ConfigDict(extra="forbid")
+    scan_code: str = Field(
+        ...,
+        description="Scanner code: TOP_PERC_GAIN, TOP_PERC_LOSE, MOST_ACTIVE, "
+                    "HOT_BY_VOLUME, TOP_TRADE_COUNT, TOP_PRICE_RANGE, "
+                    "HIGH_OPT_VOLUME_PUT_CALL_RATIO, HOT_BY_OPT_VOLUME, "
+                    "TOP_VOLUME_RATE, TOP_OPEN_PERC_GAIN, TOP_OPEN_PERC_LOSE, "
+                    "HIGH_OPEN_GAP, LOW_OPEN_GAP, SCAN_socialSentiment_net"
+    )
+    instrument: str = Field(
+        default="STK",
+        description="Instrument type: STK, FUT, IND"
+    )
+    location_code: str = Field(
+        default="STK.US.MAJOR",
+        description="Location code: STK.US.MAJOR, STK.US, STK.US.MINOR, STK.EU, "
+                    "STK.AMEX, STK.NYSE, STK.NASDAQ.NMS, FUT.US, IND.US"
+    )
+    number_of_rows: int = Field(
+        default=20,
+        description="Number of results to return (max 50)",
+        ge=1,
+        le=50,
+    )
+    above_price: Optional[float] = Field(
+        default=None,
+        description="Minimum price filter"
+    )
+    below_price: Optional[float] = Field(
+        default=None,
+        description="Maximum price filter"
+    )
+    above_volume: Optional[int] = Field(
+        default=None,
+        description="Minimum average daily volume filter"
+    )
+    market_cap_above: Optional[float] = Field(
+        default=None,
+        description="Minimum market cap filter (in USD, e.g. 1e9 for $1B)"
+    )
+    market_cap_below: Optional[float] = Field(
+        default=None,
+        description="Maximum market cap filter (in USD)"
     )
 
 
@@ -620,6 +668,88 @@ async def ib_historical_data(params: HistoricalDataInput) -> str:
 
     except Exception as e:
         return f"Error getting historical data for {params.symbol}: {e}"
+
+
+# === MARKET SCANNER ===
+
+@mcp.tool(
+    name="ib_scanner",
+    annotations={
+        "title": "IB Market Scanner",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
+async def ib_scanner(params: ScannerInput) -> str:
+    """Run a market scanner to find stocks by criteria (top gainers, losers, most active, etc.).
+
+    Returns a ranked list of instruments matching the scanner criteria. Useful for
+    finding trading opportunities, screening for unusual activity, or monitoring
+    market movers.
+
+    Common scan codes:
+    - TOP_PERC_GAIN / TOP_PERC_LOSE — top % gainers / losers
+    - MOST_ACTIVE — highest volume
+    - HOT_BY_VOLUME — unusual volume spike
+    - TOP_TRADE_COUNT — most trades
+    - TOP_PRICE_RANGE — largest intraday range
+    - HIGH_OPT_VOLUME_PUT_CALL_RATIO — high options put/call ratio
+
+    Args:
+        params: Scanner parameters including scan code, instrument type, location, and filters.
+
+    Returns:
+        str: Markdown table with ranked scanner results.
+    """
+    try:
+        ib = await _get_ib()
+
+        sub = ScannerSubscription(
+            instrument=params.instrument,
+            locationCode=params.location_code,
+            scanCode=params.scan_code,
+            numberOfRows=params.number_of_rows,
+        )
+
+        if params.above_price is not None:
+            sub.abovePrice = params.above_price
+        if params.below_price is not None:
+            sub.belowPrice = params.below_price
+        if params.above_volume is not None:
+            sub.aboveVolume = params.above_volume
+        if params.market_cap_above is not None:
+            sub.marketCapAbove = params.market_cap_above
+        if params.market_cap_below is not None:
+            sub.marketCapBelow = params.market_cap_below
+
+        results = await ib.reqScannerDataAsync(sub, [])
+
+        if not results:
+            return f"No results for scanner '{params.scan_code}' at {params.location_code}."
+
+        lines = [
+            f"# Scanner: {params.scan_code}",
+            f"Location: {params.location_code} | Instrument: {params.instrument}",
+            "",
+            "| Rank | Symbol | Name | Type |",
+            "|------|--------|------|------|",
+        ]
+
+        for item in results:
+            c = item.contractDetails.contract
+            name = item.contractDetails.longName or ""
+            rank = item.rank + 1  # IB ranks are 0-based
+            lines.append(f"| {rank} | {c.symbol} | {name} | {c.secType} |")
+
+        lines.append("")
+        lines.append(f"*{len(results)} results returned*")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error running scanner '{params.scan_code}': {e}"
 
 
 # === CONTRACT INFO ===
