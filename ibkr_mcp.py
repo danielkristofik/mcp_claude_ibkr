@@ -488,23 +488,22 @@ async def ib_positions(params: PositionsInput) -> str:
     try:
         ib = await _get_ib()
 
-        # Subscribe to account updates to populate portfolio cache
-        accounts = ib.managedAccounts()
-        account = accounts[0] if accounts else ""
-        ib.reqAccountUpdates(account)
-        await asyncio.sleep(1.5)
-
-        # Read portfolio from cache (includes market price, market value, P&L)
-        portfolio = ib.portfolio()
-        if not portfolio:
+        # reqPositionsAsync is reliable async — always works
+        positions = await ib.reqPositionsAsync()
+        if not positions:
             return "No positions found."
+
+        # Try portfolio cache for market value enrichment (may be populated from connection)
+        portfolio_map: Dict[int, Any] = {}
+        for item in ib.portfolio():
+            portfolio_map[item.contract.conId] = item
 
         # Filter
         if params.symbol_filter:
             flt = params.symbol_filter.upper()
-            portfolio = [item for item in portfolio if flt in item.contract.symbol.upper()]
+            positions = [p for p in positions if flt in p.contract.symbol.upper()]
 
-        if not portfolio:
+        if not positions:
             return f"No positions matching '{params.symbol_filter}'."
 
         # Build conId → set of clientIds from available executions
@@ -519,9 +518,10 @@ async def ib_positions(params: PositionsInput) -> str:
 
         total_market_value = 0.0
         total_unrealized_pnl = 0.0
+        has_market_data = False
 
-        for item in sorted(portfolio, key=lambda x: x.contract.symbol):
-            c = item.contract
+        for p in sorted(positions, key=lambda x: x.contract.symbol):
+            c = p.contract
             symbol_info = c.symbol
             if c.secType == "OPT":
                 symbol_info += f" {c.lastTradeDateOrContractMonth} {c.strike}{c.right}"
@@ -529,18 +529,22 @@ async def ib_positions(params: PositionsInput) -> str:
                 symbol_info += f" {c.lastTradeDateOrContractMonth}"
 
             lines.append(f"## {symbol_info} ({c.secType})")
-            lines.append(f"Position: {item.position:,.0f} | Avg cost: {_format_currency(item.averageCost, c.currency)}")
-            lines.append(
-                f"Market price: {item.marketPrice:,.2f} | "
-                f"Market value: {_format_currency(item.marketValue, c.currency)}"
-            )
-            lines.append(
-                f"Unrealized P&L: {item.unrealizedPNL:+,.2f} {c.currency} | "
-                f"Realized P&L: {item.realizedPNL:+,.2f} {c.currency}"
-            )
+            lines.append(f"Position: {p.position:,.0f} | Avg cost: {_format_currency(p.avgCost, c.currency)}")
 
-            total_market_value += item.marketValue
-            total_unrealized_pnl += item.unrealizedPNL
+            # Enrich with market data from portfolio cache if available
+            pf = portfolio_map.get(c.conId)
+            if pf:
+                has_market_data = True
+                lines.append(
+                    f"Market price: {pf.marketPrice:,.2f} | "
+                    f"Market value: {_format_currency(pf.marketValue, c.currency)}"
+                )
+                lines.append(
+                    f"Unrealized P&L: {pf.unrealizedPNL:+,.2f} {c.currency} | "
+                    f"Realized P&L: {pf.realizedPNL:+,.2f} {c.currency}"
+                )
+                total_market_value += pf.marketValue
+                total_unrealized_pnl += pf.unrealizedPNL
 
             cids = client_ids_by_con.get(c.conId)
             if cids:
@@ -548,9 +552,10 @@ async def ib_positions(params: PositionsInput) -> str:
 
             lines.append("")
 
-        lines.append("---")
-        lines.append(f"**Total market value: {_format_currency(total_market_value)}**")
-        lines.append(f"**Total unrealized P&L: {total_unrealized_pnl:+,.2f} USD**")
+        if has_market_data:
+            lines.append("---")
+            lines.append(f"**Total market value: {_format_currency(total_market_value)}**")
+            lines.append(f"**Total unrealized P&L: {total_unrealized_pnl:+,.2f} USD**")
 
         return "\n".join(lines)
 
