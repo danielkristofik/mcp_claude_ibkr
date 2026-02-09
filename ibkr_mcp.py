@@ -16,7 +16,7 @@ import hashlib
 import time
 import asyncio
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Optional, List, Dict, Any
@@ -487,9 +487,14 @@ async def ib_positions(params: PositionsInput) -> str:
     """
     try:
         ib = await _get_ib()
-        await asyncio.sleep(1)
 
-        # Use ib.portfolio() for full position data including market value and P&L
+        # Subscribe to account updates to populate portfolio cache
+        accounts = ib.managedAccounts()
+        account = accounts[0] if accounts else ""
+        ib.reqAccountUpdates(True, account)
+        await asyncio.sleep(1.5)
+
+        # Read portfolio from cache (includes market price, market value, P&L)
         portfolio = ib.portfolio()
         if not portfolio:
             return "No positions found."
@@ -1520,7 +1525,7 @@ async def ib_executions(params: ExecutionsInput) -> str:
         exec_filter = ExecutionFilter()
 
         if params.since_days > 0:
-            since = datetime.now() - timedelta(days=params.since_days)
+            since = datetime.now(timezone.utc) - timedelta(days=params.since_days)
             exec_filter.time = since.strftime("%Y%m%d 00:00:00")
 
         if params.client_id_filter is not None:
@@ -1539,7 +1544,7 @@ async def ib_executions(params: ExecutionsInput) -> str:
         # Apply time filter on cached fills (reqExecutionsAsync filters server-side
         # but fills() returns full cache — re-filter if since_days was specified)
         if params.since_days > 0:
-            since = datetime.now() - timedelta(days=params.since_days)
+            since = datetime.now(timezone.utc) - timedelta(days=params.since_days)
             fills = [f for f in fills if f.execution.time >= since]
 
         # Apply client ID filter
