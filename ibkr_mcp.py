@@ -1019,19 +1019,45 @@ async def ib_scanner(params: ScannerInput) -> str:
         if not results:
             return f"No results for scanner '{params.scan_code}' at {params.location_code}."
 
+        # Request market data snapshots for all scanner results
+        contracts = [item.contractDetails.contract for item in results]
+        tickers = await ib.reqTickersAsync(*contracts)
+        ticker_map = {t.contract.conId: t for t in tickers}
+
         lines = [
             f"# Scanner: {params.scan_code}",
             f"Location: {params.location_code} | Instrument: {params.instrument}",
             "",
-            "| Rank | Symbol | Name | Type |",
-            "|------|--------|------|------|",
+            "| Rank | Symbol | Name | Close | Change % | Volume |",
+            "|------|--------|------|------:|--------:|---------:|",
         ]
 
         for item in results:
             c = item.contractDetails.contract
             name = item.contractDetails.longName or ""
             rank = item.rank + 1  # IB ranks are 0-based
-            lines.append(f"| {rank} | {c.symbol} | {name} | {c.secType} |")
+
+            t = ticker_map.get(c.conId)
+            if t:
+                close = t.close
+                last = t.last
+                # Compute % change from previous close
+                if (close and close == close and close > 0
+                        and last and last == last and last > 0):
+                    pct = (last - close) / close * 100
+                    close_str = f"{last:,.2f}"
+                    pct_str = f"{pct:+.2f}%"
+                else:
+                    close_str = f"{close:,.2f}" if close and close == close else "N/A"
+                    pct_str = "N/A"
+                vol = t.volume
+                vol_str = f"{vol:,.0f}" if vol and vol == vol and vol >= 0 else "N/A"
+            else:
+                close_str = "N/A"
+                pct_str = "N/A"
+                vol_str = "N/A"
+
+            lines.append(f"| {rank} | {c.symbol} | {name} | {close_str} | {pct_str} | {vol_str} |")
 
         lines.append("")
         lines.append(f"*{len(results)} results returned*")
@@ -1290,10 +1316,16 @@ async def ib_prepare_order(params: PrepareOrderInput) -> str:
         }
 
         # Format for user review
+        symbol_display = params.symbol
+        if params.sec_type == "OPT" and params.expiry:
+            symbol_display += f" {params.expiry} {params.strike}{params.right}"
+        elif params.sec_type == "FUT" and params.expiry:
+            symbol_display += f" {params.expiry}"
+
         lines = [
             "# ⚠️ Order Prepared — Awaiting Confirmation",
             "",
-            f"**Action:** {params.action.value} {params.quantity:,.0f} x {params.symbol}",
+            f"**Action:** {params.action.value} {params.quantity:,.0f} x {symbol_display} ({params.sec_type})",
             f"**Type:** {params.order_type.value}",
         ]
 
@@ -1307,6 +1339,7 @@ async def ib_prepare_order(params: PrepareOrderInput) -> str:
             f"**Outside RTH:** {'Yes' if params.outside_rth else 'No'}",
             f"**Exchange:** {params.exchange}",
             f"**Currency:** {params.currency}",
+            f"**Contract ID:** {contract.conId}",
             "",
             f"**Confirmation token:** `{token}`",
             "",
