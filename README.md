@@ -34,7 +34,10 @@ The installer will:
 | Tool | Description | Read-only |
 |---|---|---|
 | `ib_account_summary` | Account overview — liquidation value, cash, margin, buying power | Yes |
-| `ib_positions` | Portfolio positions with P&L | Yes |
+| `ib_positions` | Portfolio positions with market value and P&L | Yes |
+| `ib_pnl` | Daily P&L — realized and unrealized | Yes |
+| `ib_fundamental_data` | Fundamentals — P/E, EPS, market cap, dividends, 52-week range | Yes |
+| `ib_margin_impact` | Margin impact estimate for a hypothetical order (what-if) | Yes |
 | `ib_market_data` | Real-time snapshot (bid/ask/last/volume) + Greeks for options | Yes |
 | `ib_historical_data` | Historical OHLCV bars | Yes |
 | `ib_scanner` | Market scanner (top gainers, losers, most active, etc.) | Yes |

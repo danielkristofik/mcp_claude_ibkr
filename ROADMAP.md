@@ -10,12 +10,12 @@
 
 ## B. New Analysis Tools
 
-| Tool | Description |
-|------|-------------|
-| `ib_scanner` | Market scanners — top gainers, losers, most active, highest volume |
-| `ib_fundamental_data` | P/E, EPS, dividends, market cap — basic fundamentals |
-| `ib_pnl` | Real-time daily P&L for the account |
-| `ib_margin_impact` | Margin requirement estimate before placing an order |
+| Tool | Description | Status |
+|------|-------------|--------|
+| `ib_scanner` | Market scanners — top gainers, losers, most active, highest volume | ✅ Done |
+| `ib_fundamental_data` | P/E, EPS, dividends, market cap — basic fundamentals | ✅ Done |
+| `ib_pnl` | Real-time daily P&L for the account | ✅ Done |
+| `ib_margin_impact` | Margin requirement estimate before placing an order | ✅ Done |
 
 ## C. Options & Multi-Leg Strategies
 
@@ -30,7 +30,7 @@
 | Change | Description |
 |--------|-------------|
 | `ib_historical_data` as table | Return markdown table in addition to JSON for readability |
-| `ib_positions` with market value | Add current market price and total position value |
+| `ib_positions` with market value | Add current market price and total position value | ✅ Done |
 | `ib_executions` summary | Group executions by symbol, show total daily P&L |
 | `ib_modify_order` | Change price/quantity of an existing order without cancel + re-create |
 

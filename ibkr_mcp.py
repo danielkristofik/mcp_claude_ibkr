@@ -365,6 +365,33 @@ class ScannerInput(BaseModel):
     )
 
 
+class PnLInput(BaseModel):
+    """Input for daily P&L query."""
+    model_config = ConfigDict(extra="forbid")
+
+
+class FundamentalDataInput(BaseModel):
+    """Input for fundamental data query."""
+    model_config = ConfigDict(extra="forbid")
+    symbol: str = Field(..., description="Ticker symbol (e.g. AAPL, MSFT)", min_length=1, max_length=20)
+    sec_type: str = Field(default="STK", description="Security type (default STK)")
+    exchange: str = Field(default="SMART", description="Exchange (default SMART)")
+    currency: str = Field(default="USD", description="Currency (default USD)")
+
+
+class MarginImpactInput(BaseModel):
+    """Input for margin impact analysis (what-if order)."""
+    model_config = ConfigDict(extra="forbid")
+    symbol: str = Field(..., description="Ticker symbol", min_length=1, max_length=20)
+    sec_type: str = Field(default="STK", description="Security type: STK, FX, OPT, FUT")
+    exchange: str = Field(default="SMART", description="Exchange")
+    currency: str = Field(default="USD", description="Currency")
+    action: OrderAction = Field(..., description="BUY or SELL")
+    quantity: float = Field(..., description="Number of shares/contracts", gt=0)
+    order_type: str = Field(default="MKT", description="Order type: MKT or LMT")
+    limit_price: Optional[float] = Field(default=None, description="Limit price (required for LMT orders)")
+
+
 # ─── Tools ────────────────────────────────────────────────────────────────────
 
 # === ACCOUNT & PORTFOLIO ===
@@ -457,18 +484,19 @@ async def ib_positions(params: PositionsInput) -> str:
     """
     try:
         ib = await _get_ib()
+        await asyncio.sleep(1)
 
-        # Use async reqPositionsAsync to avoid event loop conflict
-        positions = await ib.reqPositionsAsync()
-        if not positions:
+        # Use ib.portfolio() for full position data including market value and P&L
+        portfolio = ib.portfolio()
+        if not portfolio:
             return "No positions found."
 
         # Filter
         if params.symbol_filter:
             flt = params.symbol_filter.upper()
-            positions = [p for p in positions if flt in p.contract.symbol.upper()]
+            portfolio = [item for item in portfolio if flt in item.contract.symbol.upper()]
 
-        if not positions:
+        if not portfolio:
             return f"No positions matching '{params.symbol_filter}'."
 
         # Build conId → set of clientIds from available executions
@@ -481,8 +509,11 @@ async def ib_positions(params: PositionsInput) -> str:
 
         lines = ["# Portfolio Positions", ""]
 
-        for p in sorted(positions, key=lambda x: x.contract.symbol):
-            c = p.contract
+        total_market_value = 0.0
+        total_unrealized_pnl = 0.0
+
+        for item in sorted(portfolio, key=lambda x: x.contract.symbol):
+            c = item.contract
             symbol_info = c.symbol
             if c.secType == "OPT":
                 symbol_info += f" {c.lastTradeDateOrContractMonth} {c.strike}{c.right}"
@@ -490,7 +521,18 @@ async def ib_positions(params: PositionsInput) -> str:
                 symbol_info += f" {c.lastTradeDateOrContractMonth}"
 
             lines.append(f"## {symbol_info} ({c.secType})")
-            lines.append(f"Position: {p.position:,.0f} | Avg cost: {_format_currency(p.avgCost, c.currency)}")
+            lines.append(f"Position: {item.position:,.0f} | Avg cost: {_format_currency(item.averageCost, c.currency)}")
+            lines.append(
+                f"Market price: {item.marketPrice:,.2f} | "
+                f"Market value: {_format_currency(item.marketValue, c.currency)}"
+            )
+            lines.append(
+                f"Unrealized P&L: {item.unrealizedPNL:+,.2f} {c.currency} | "
+                f"Realized P&L: {item.realizedPNL:+,.2f} {c.currency}"
+            )
+
+            total_market_value += item.marketValue
+            total_unrealized_pnl += item.unrealizedPNL
 
             cids = client_ids_by_con.get(c.conId)
             if cids:
@@ -498,10 +540,258 @@ async def ib_positions(params: PositionsInput) -> str:
 
             lines.append("")
 
+        lines.append("---")
+        lines.append(f"**Total market value: {_format_currency(total_market_value)}**")
+        lines.append(f"**Total unrealized P&L: {total_unrealized_pnl:+,.2f} USD**")
+
         return "\n".join(lines)
 
     except Exception as e:
         return f"Error getting positions: {e}"
+
+
+@mcp.tool(
+    name="ib_pnl",
+    annotations={
+        "title": "IB Daily P&L",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def ib_pnl(params: PnLInput) -> str:
+    """Get daily P&L summary for the account.
+
+    Returns daily realized and unrealized P&L. Useful for tracking
+    intraday performance.
+
+    Returns:
+        str: Formatted daily P&L with unrealized and realized components.
+    """
+    pnl = None
+    try:
+        ib = await _get_ib()
+        accounts = ib.managedAccounts()
+        if not accounts:
+            return "No managed accounts found."
+
+        account = accounts[0]
+        pnl = ib.reqPnL(account, "")
+        await asyncio.sleep(1)
+
+        def _fmt(val: float) -> str:
+            if val != val or val is None:  # NaN check
+                return "N/A"
+            return f"{val:+,.2f} USD"
+
+        lines = [
+            "# Daily P&L",
+            "",
+            f"Account: {account}",
+            f"Daily P&L: {_fmt(pnl.dailyPnL)}",
+            f"Unrealized P&L: {_fmt(pnl.unrealizedPnL)}",
+            f"Realized P&L: {_fmt(pnl.realizedPnL)}",
+        ]
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error getting P&L: {e}"
+    finally:
+        if pnl is not None:
+            try:
+                ib.cancelPnL(pnl)
+            except Exception:
+                pass
+
+
+@mcp.tool(
+    name="ib_fundamental_data",
+    annotations={
+        "title": "IB Fundamental Data",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    },
+)
+async def ib_fundamental_data(params: FundamentalDataInput) -> str:
+    """Get fundamental data for a stock (P/E, EPS, market cap, dividends, 52-week range).
+
+    Uses real-time fundamental ratios from IB market data. Best for stocks (STK).
+
+    Args:
+        params: Symbol and contract parameters.
+
+    Returns:
+        str: Formatted fundamental ratios, price range, and dividend info.
+    """
+    ticker = None
+    try:
+        ib = await _get_ib()
+        contract = _contract_from_params(
+            params.symbol, params.sec_type, params.exchange, params.currency
+        )
+        await ib.qualifyContractsAsync(contract)
+
+        # Request fundamental ratios (258), misc stats (165), dividends (59)
+        ticker = ib.reqMktData(contract, genericTickList="258,165,59")
+        await asyncio.sleep(2)
+
+        lines = [f"# Fundamentals: {params.symbol}", ""]
+
+        # Key ratios from fundamentalRatios (tick 258)
+        ratios = ticker.fundamentalRatios
+        if ratios:
+            lines.append("## Key Ratios")
+
+            def _r(attr: str, label: str, fmt: str = ",.2f", suffix: str = "") -> Optional[str]:
+                val = getattr(ratios, attr, None)
+                if val is None or val == -1.0:
+                    return None
+                try:
+                    return f"{label}: {val:{fmt}}{suffix}"
+                except (ValueError, TypeError):
+                    return f"{label}: {val}{suffix}"
+
+            ratio_lines = [
+                _r("MKTCAP", "Market Cap", ",.2f", "M"),
+                _r("PEEXCLXOR", "P/E Ratio"),
+                _r("TTMEPSXCLX", "EPS (TTM)"),
+                _r("YIELD", "Dividend Yield", ".2f", "%"),
+                _r("PRICE2BK", "Price/Book"),
+                _r("TTMREV", "Revenue (TTM)", ",.2f", "M"),
+                _r("TTMROEPCT", "ROE (TTM)", ".2f", "%"),
+                _r("DEBT2EQUITY", "Debt/Equity"),
+                _r("TTMPR2REV", "Price/Revenue (TTM)"),
+                _r("TTMPRCFPS", "Price/Cash Flow"),
+            ]
+            for line in ratio_lines:
+                if line:
+                    lines.append(line)
+            lines.append("")
+        else:
+            lines.append("*Fundamental ratios not available (may require market data subscription)*")
+            lines.append("")
+
+        # 52-week range and volume (tick 165)
+        lines.append("## Price Range")
+        hi52 = ticker.high52
+        lo52 = ticker.low52
+        avol = ticker.avVolume
+        lines.append(f"52-Week High: {hi52:,.2f}" if hi52 and hi52 == hi52 else "52-Week High: N/A")
+        lines.append(f"52-Week Low: {lo52:,.2f}" if lo52 and lo52 == lo52 else "52-Week Low: N/A")
+        lines.append(f"Avg Volume: {avol:,.0f}" if avol and avol == avol else "Avg Volume: N/A")
+        lines.append("")
+
+        # Dividends (tick 59)
+        lines.append("## Dividends")
+        divs = ticker.dividends
+        if divs:
+            lines.append(f"Past 12M Dividends: {divs.past12Months}" if divs.past12Months else "Past 12M: N/A")
+            if divs.nextAmount:
+                next_date = divs.nextDate if divs.nextDate else "TBD"
+                lines.append(f"Next Dividend: {divs.nextAmount} on {next_date}")
+        else:
+            lines.append("Dividend data not available")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error getting fundamental data for {params.symbol}: {e}"
+    finally:
+        if ticker is not None:
+            try:
+                ib.cancelMktData(ticker.contract)
+            except Exception:
+                pass
+
+
+@mcp.tool(
+    name="ib_margin_impact",
+    annotations={
+        "title": "IB Margin Impact",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def ib_margin_impact(params: MarginImpactInput) -> str:
+    """Estimate margin impact of a hypothetical order WITHOUT submitting it.
+
+    Uses IB's what-if order to show initial/maintenance margin changes
+    and commission estimates. Nothing is actually submitted.
+
+    Args:
+        params: Symbol, action, quantity, and order type for the hypothetical order.
+
+    Returns:
+        str: Margin requirements before/after and commission estimate.
+    """
+    try:
+        ib = await _get_ib()
+        contract = _contract_from_params(
+            params.symbol, params.sec_type, params.exchange, params.currency
+        )
+        await ib.qualifyContractsAsync(contract)
+
+        # Build order
+        if params.order_type == "LMT":
+            if params.limit_price is None:
+                return "Error: limit_price is required for LMT orders."
+            order = LimitOrder(params.action.value, params.quantity, params.limit_price)
+        else:
+            order = MarketOrder(params.action.value, params.quantity)
+
+        # What-if — does NOT submit the order
+        state = await ib.whatIfOrderAsync(contract, order)
+
+        if not state:
+            return f"No margin data returned for {params.symbol}. Check contract and permissions."
+
+        def _m(val) -> str:
+            """Format margin value."""
+            try:
+                v = float(val)
+                return f"{v:,.2f}"
+            except (ValueError, TypeError):
+                return str(val) if val else "N/A"
+
+        lines = [
+            f"# Margin Impact: {params.action.value} {params.quantity:,.0f} {params.symbol}",
+            "",
+            "## Margin Requirements",
+            "",
+            "| | Before | After | Change |",
+            "|--|--------|-------|--------|",
+            f"| Initial Margin | {_m(state.initMarginBefore)} | {_m(state.initMarginAfter)} | {_m(state.initMarginChange)} |",
+            f"| Maint. Margin | {_m(state.maintMarginBefore)} | {_m(state.maintMarginAfter)} | {_m(state.maintMarginChange)} |",
+            f"| Equity w/ Loan | {_m(state.equityWithLoanBefore)} | {_m(state.equityWithLoanAfter)} | {_m(state.equityWithLoanChange)} |",
+            "",
+            "## Commission Estimate",
+        ]
+
+        try:
+            comm = float(state.commission)
+            min_comm = float(state.minCommission)
+            max_comm = float(state.maxCommission)
+
+            if comm < 1e9:
+                lines.append(f"Estimated: {_format_currency(comm)}")
+            if min_comm < 1e9 and max_comm < 1e9:
+                lines.append(f"Range: {min_comm:,.2f} – {max_comm:,.2f} USD")
+        except (ValueError, TypeError):
+            lines.append("Commission: N/A")
+
+        if state.warningText:
+            lines.extend(["", f"**Warning:** {state.warningText}"])
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error getting margin impact for {params.symbol}: {e}"
 
 
 # === MARKET DATA ===
