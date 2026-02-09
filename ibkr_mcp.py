@@ -491,7 +491,7 @@ async def ib_positions(params: PositionsInput) -> str:
         # Subscribe to account updates to populate portfolio cache
         accounts = ib.managedAccounts()
         account = accounts[0] if accounts else ""
-        ib.reqAccountUpdates(True, account)
+        ib.reqAccountUpdates(account)
         await asyncio.sleep(1.5)
 
         # Read portfolio from cache (includes market price, market value, P&L)
