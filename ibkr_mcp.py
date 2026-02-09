@@ -390,6 +390,9 @@ class MarginImpactInput(BaseModel):
     quantity: float = Field(..., description="Number of shares/contracts", gt=0)
     order_type: str = Field(default="MKT", description="Order type: MKT or LMT")
     limit_price: Optional[float] = Field(default=None, description="Limit price (required for LMT orders)")
+    expiry: Optional[str] = Field(default=None, description="Expiry date YYYYMMDD (required for OPT/FUT)")
+    strike: Optional[float] = Field(default=None, description="Strike price (required for OPT)")
+    right: Optional[str] = Field(default=None, description="Option right: C or P (required for OPT)")
 
 
 # ─── Tools ────────────────────────────────────────────────────────────────────
@@ -635,8 +638,8 @@ async def ib_fundamental_data(params: FundamentalDataInput) -> str:
         )
         await ib.qualifyContractsAsync(contract)
 
-        # Request fundamental ratios (258), misc stats (165), dividends (59)
-        ticker = ib.reqMktData(contract, genericTickList="258,165,59")
+        # Request fundamental ratios (258) and dividends (59)
+        ticker = ib.reqMktData(contract, genericTickList="258,59")
         await asyncio.sleep(2)
 
         lines = [f"# Fundamentals: {params.symbol}", ""]
@@ -671,19 +674,16 @@ async def ib_fundamental_data(params: FundamentalDataInput) -> str:
                 if line:
                     lines.append(line)
             lines.append("")
+
+            # 52-week range and avg volume from fundamentalRatios
+            lines.append("## Price Range")
+            lines.append(_r("NHIG", "52-Week High") or "52-Week High: N/A")
+            lines.append(_r("NLOW", "52-Week Low") or "52-Week Low: N/A")
+            lines.append(_r("APTS5DAVG", "Avg Volume (5D)", ",.0f") or "Avg Volume: N/A")
+            lines.append("")
         else:
             lines.append("*Fundamental ratios not available (may require market data subscription)*")
             lines.append("")
-
-        # 52-week range and volume (tick 165)
-        lines.append("## Price Range")
-        hi52 = ticker.high52
-        lo52 = ticker.low52
-        avol = ticker.avVolume
-        lines.append(f"52-Week High: {hi52:,.2f}" if hi52 and hi52 == hi52 else "52-Week High: N/A")
-        lines.append(f"52-Week Low: {lo52:,.2f}" if lo52 and lo52 == lo52 else "52-Week Low: N/A")
-        lines.append(f"Avg Volume: {avol:,.0f}" if avol and avol == avol else "Avg Volume: N/A")
-        lines.append("")
 
         # Dividends (tick 59)
         lines.append("## Dividends")
@@ -733,7 +733,8 @@ async def ib_margin_impact(params: MarginImpactInput) -> str:
     try:
         ib = await _get_ib()
         contract = _contract_from_params(
-            params.symbol, params.sec_type, params.exchange, params.currency
+            params.symbol, params.sec_type, params.exchange, params.currency,
+            params.expiry, params.strike, params.right,
         )
         await ib.qualifyContractsAsync(contract)
 
@@ -759,8 +760,15 @@ async def ib_margin_impact(params: MarginImpactInput) -> str:
             except (ValueError, TypeError):
                 return str(val) if val else "N/A"
 
+        # Build display name with option details
+        symbol_display = params.symbol
+        if params.sec_type == "OPT" and params.expiry:
+            symbol_display += f" {params.expiry} {params.strike}{params.right}"
+        elif params.sec_type == "FUT" and params.expiry:
+            symbol_display += f" {params.expiry}"
+
         lines = [
-            f"# Margin Impact: {params.action.value} {params.quantity:,.0f} {params.symbol}",
+            f"# Margin Impact: {params.action.value} {params.quantity:,.0f} {symbol_display}",
             "",
             "## Margin Requirements",
             "",
