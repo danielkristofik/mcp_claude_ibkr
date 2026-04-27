@@ -564,6 +564,192 @@ async def ib_positions(params: PositionsInput) -> str:
 
 
 @mcp.tool(
+    name="ib_account_summary_json",
+    annotations={
+        "title": "IB Account Summary (structured)",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def ib_account_summary_json(params: AccountSummaryInput) -> dict:
+    """Structured variant of ib_account_summary — returns dict for programmatic consumers.
+
+    Same data source (accountValues), same default tags. Use this from dashboards
+    or pipelines that need to read fields by name; use the text variant for LLMs.
+
+    Returns:
+        dict: {
+          "accounts": {"<accountId>": {"<tag>": {"value": float|str, "currency": str}, ...}, ...},
+          "synced_at": "ISO-8601",
+          "error": null | str,
+        }
+    """
+    try:
+        ib = await _get_ib()
+        await asyncio.sleep(1)
+        summary = ib.accountValues()
+        if not summary:
+            return {"accounts": {}, "synced_at": datetime.now(timezone.utc).isoformat(),
+                    "error": "No account summary data available."}
+
+        if params.tags:
+            tag_set = {t.lower() for t in params.tags}
+            summary = [s for s in summary if s.tag.lower() in tag_set]
+        else:
+            default_tags = {
+                "netliquidation", "totalcashvalue", "grosspositionvalue",
+                "buyingpower", "availablefunds", "maintmarginreq",
+                "excessliquidity", "unrealizedpnl", "realizedpnl",
+            }
+            summary = [s for s in summary if s.tag.lower() in default_tags]
+
+        accounts: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for item in summary:
+            try:
+                value: Any = float(item.value)
+            except (TypeError, ValueError):
+                value = item.value
+            accounts.setdefault(item.account, {})[item.tag] = {
+                "value": value, "currency": item.currency or "",
+            }
+        return {"accounts": accounts, "synced_at": datetime.now(timezone.utc).isoformat(),
+                "error": None}
+    except Exception as e:
+        return {"accounts": {}, "synced_at": datetime.now(timezone.utc).isoformat(),
+                "error": str(e)}
+
+
+@mcp.tool(
+    name="ib_positions_json",
+    annotations={
+        "title": "IB Portfolio Positions (structured)",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def ib_positions_json(params: PositionsInput) -> dict:
+    """Structured variant of ib_positions — returns dict per position for programmatic consumers.
+
+    Returns:
+        dict: {
+          "positions": [
+            {
+              "symbol": str, "sec_type": "STK"|"OPT"|"FUT"|"CASH"|"...",
+              "currency": str, "exchange": str, "con_id": int,
+              "strike": float|None, "expiry": str|None, "right": "C"|"P"|None,
+              "multiplier": str|None,
+              "position": float, "avg_cost": float,
+              "market_price": float|None, "market_value": float|None,
+              "unrealized_pnl": float|None, "realized_pnl": float|None,
+            }, ...
+          ],
+          "total_market_value": float, "total_unrealized_pnl": float,
+          "has_market_data": bool, "synced_at": "ISO-8601",
+          "error": null | str,
+        }
+    """
+    try:
+        ib = await _get_ib()
+        positions = await ib.reqPositionsAsync()
+        if not positions:
+            return {"positions": [], "total_market_value": 0.0, "total_unrealized_pnl": 0.0,
+                    "has_market_data": False, "synced_at": datetime.now(timezone.utc).isoformat(),
+                    "error": None}
+
+        portfolio_map: Dict[int, Any] = {}
+        for item in ib.portfolio():
+            portfolio_map[item.contract.conId] = item
+
+        if params.symbol_filter:
+            flt = params.symbol_filter.upper()
+            positions = [p for p in positions if flt in p.contract.symbol.upper()]
+
+        out = []
+        total_mv = 0.0
+        total_upnl = 0.0
+        has_md = False
+        for p in sorted(positions, key=lambda x: x.contract.symbol):
+            c = p.contract
+            row: Dict[str, Any] = {
+                "symbol": c.symbol, "sec_type": c.secType, "currency": c.currency or "",
+                "exchange": c.exchange or "", "con_id": c.conId,
+                "strike": getattr(c, "strike", None) or None,
+                "expiry": c.lastTradeDateOrContractMonth or None,
+                "right": getattr(c, "right", None) or None,
+                "multiplier": getattr(c, "multiplier", None) or None,
+                "position": float(p.position), "avg_cost": float(p.avgCost),
+                "market_price": None, "market_value": None,
+                "unrealized_pnl": None, "realized_pnl": None,
+            }
+            pf = portfolio_map.get(c.conId)
+            if pf:
+                has_md = True
+                row["market_price"] = float(pf.marketPrice)
+                row["market_value"] = float(pf.marketValue)
+                row["unrealized_pnl"] = float(pf.unrealizedPNL)
+                row["realized_pnl"] = float(pf.realizedPNL)
+                total_mv += pf.marketValue
+                total_upnl += pf.unrealizedPNL
+            out.append(row)
+
+        return {"positions": out, "total_market_value": total_mv,
+                "total_unrealized_pnl": total_upnl, "has_market_data": has_md,
+                "synced_at": datetime.now(timezone.utc).isoformat(), "error": None}
+    except Exception as e:
+        return {"positions": [], "total_market_value": 0.0, "total_unrealized_pnl": 0.0,
+                "has_market_data": False, "synced_at": datetime.now(timezone.utc).isoformat(),
+                "error": str(e)}
+
+
+@mcp.tool(
+    name="ib_pnl_json",
+    annotations={
+        "title": "IB Daily P&L (structured)",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+async def ib_pnl_json(params: PnLInput) -> dict:
+    """Structured variant of ib_pnl. Returns daily/unrealized/realized as floats."""
+    pnl = None
+    try:
+        ib = await _get_ib()
+        accounts = ib.managedAccounts()
+        if not accounts:
+            return {"account": None, "daily_pnl": None, "unrealized_pnl": None,
+                    "realized_pnl": None, "synced_at": datetime.now(timezone.utc).isoformat(),
+                    "error": "No managed accounts found."}
+        account = accounts[0]
+        pnl = ib.reqPnL(account, "")
+        await asyncio.sleep(1)
+
+        def _f(v):
+            if v is None or (isinstance(v, float) and v != v):
+                return None
+            return float(v)
+
+        return {"account": account, "daily_pnl": _f(pnl.dailyPnL),
+                "unrealized_pnl": _f(pnl.unrealizedPnL), "realized_pnl": _f(pnl.realizedPnL),
+                "synced_at": datetime.now(timezone.utc).isoformat(), "error": None}
+    except Exception as e:
+        return {"account": None, "daily_pnl": None, "unrealized_pnl": None,
+                "realized_pnl": None, "synced_at": datetime.now(timezone.utc).isoformat(),
+                "error": str(e)}
+    finally:
+        if pnl is not None:
+            try:
+                ib.cancelPnL(pnl)
+            except Exception:
+                pass
+
+
+@mcp.tool(
     name="ib_pnl",
     annotations={
         "title": "IB Daily P&L",
