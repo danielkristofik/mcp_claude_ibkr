@@ -1093,6 +1093,137 @@ async def ib_market_data(params: MarketDataInput) -> str:
         return f"Error getting market data for {params.symbol}: {e}"
 
 
+# === MARKET DEPTH ===
+
+
+class MarketDepthInput(BaseModel):
+    """Input for market depth (order book) snapshot."""
+    model_config = ConfigDict(extra="forbid")
+    symbol: str = Field(..., description="Ticker symbol (e.g. AAPL, QPON, BHP)", min_length=1, max_length=20)
+    sec_type: str = Field(default="STK", description="Security type: STK, FX, OPT, FUT")
+    exchange: str = Field(default="SMART", description="Exchange (e.g. SMART, ASX, NYSE)")
+    currency: str = Field(default="USD", description="Currency (e.g. USD, AUD)")
+    num_rows: int = Field(default=10, description="Number of order book rows per side (1-20)", ge=1, le=20)
+    expiry: Optional[str] = Field(default=None, description="Expiry date YYYYMMDD (for OPT/FUT)")
+    strike: Optional[float] = Field(default=None, description="Strike price (for OPT)")
+    right: Optional[str] = Field(default=None, description="Option right: 'C' or 'P' (for OPT)")
+
+
+@mcp.tool(
+    name="ib_market_depth",
+    annotations={
+        "title": "IB Market Depth (Order Book)",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
+    },
+)
+async def ib_market_depth(params: MarketDepthInput) -> str:
+    """Get a snapshot of the order book (market depth / Level 2 data) for a symbol.
+
+    Returns the top bid and ask levels with prices and sizes, giving visibility
+    into the liquidity and spread at each price level. Useful for assessing
+    execution quality before placing large orders.
+
+    For ASX stocks/ETFs, use exchange="ASX" and currency="AUD".
+
+    Args:
+        params: Symbol, contract parameters, and number of rows to fetch.
+
+    Returns:
+        str: Formatted order book with bid/ask levels, sizes, and spread.
+    """
+    depth_data = None
+    try:
+        ib = await _get_ib()
+        contract = _contract_from_params(
+            params.symbol, params.sec_type, params.exchange, params.currency,
+            params.expiry, params.strike, params.right,
+        )
+        await ib.qualifyContractsAsync(contract)
+
+        # Request market depth
+        depth_data = ib.reqMktDepth(contract, numRows=params.num_rows)
+        # Allow time for depth data to populate
+        await asyncio.sleep(2)
+
+        ticker = depth_data
+
+        bids = sorted(
+            [d for d in ticker.domBids if d.price > 0],
+            key=lambda d: d.price,
+            reverse=True,
+        )
+        asks = sorted(
+            [d for d in ticker.domAsks if d.price > 0],
+            key=lambda d: d.price,
+        )
+
+        # Build title
+        title = params.symbol
+        if params.sec_type == "OPT" and params.expiry:
+            title += f" {params.expiry} {params.strike}{params.right}"
+        elif params.sec_type == "FUT" and params.expiry:
+            title += f" {params.expiry}"
+
+        lines = [f"# Order Book: {title}", ""]
+
+        if not bids and not asks:
+            lines.append("No depth data available. Market may be closed or no L2 subscription for this exchange.")
+            return "\n".join(lines)
+
+        # Summary
+        if bids and asks:
+            spread = asks[0].price - bids[0].price
+            spread_bps = (spread / bids[0].price) * 10000
+            mid = (bids[0].price + asks[0].price) / 2
+            lines.append(f"Best Bid: {bids[0].price:,.4f}  |  Best Ask: {asks[0].price:,.4f}")
+            lines.append(f"Spread: {spread:,.4f} ({spread_bps:,.1f} bps)  |  Mid: {mid:,.4f}")
+            lines.append("")
+
+        # Asks (top of book first = highest ask at top, lowest at bottom)
+        lines.append("## Asks (Sell Orders)")
+        lines.append("")
+        lines.append("| # | Price | Size |")
+        lines.append("|---|-------|------|")
+        for i, ask in enumerate(reversed(asks), 1):
+            lines.append(f"| {len(asks) - i + 1} | {ask.price:,.4f} | {ask.size:,.0f} |")
+        lines.append("")
+
+        # Bids (highest bid at top)
+        lines.append("## Bids (Buy Orders)")
+        lines.append("")
+        lines.append("| # | Price | Size |")
+        lines.append("|---|-------|------|")
+        for i, bid in enumerate(bids, 1):
+            lines.append(f"| {i} | {bid.price:,.4f} | {bid.size:,.0f} |")
+
+        # Total depth
+        total_bid_size = sum(d.size for d in bids)
+        total_ask_size = sum(d.size for d in asks)
+        lines.extend([
+            "",
+            "## Depth Summary",
+            f"Total Bid Size: {total_bid_size:,.0f}",
+            f"Total Ask Size: {total_ask_size:,.0f}",
+        ])
+        if total_bid_size + total_ask_size > 0:
+            imbalance = (total_bid_size - total_ask_size) / (total_bid_size + total_ask_size) * 100
+            lines.append(f"Order Imbalance: {imbalance:+.1f}% ({'bid-heavy' if imbalance > 0 else 'ask-heavy'})")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        return f"Error getting market depth for {params.symbol}: {e}"
+    finally:
+        if depth_data is not None:
+            try:
+                ib.cancelMktDepth(contract)
+            except Exception:
+                pass
+
+
 @mcp.tool(
     name="ib_historical_data",
     annotations={
